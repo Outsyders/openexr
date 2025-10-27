@@ -155,7 +155,6 @@ PyFile::PyFile(const std::string& filename, bool separate_channels, bool header_
       _header_only(header_only),
       _inputFile(std::make_unique<MultiPartInputFile>(filename.c_str()))
 {
-
     for (int part_index = 0; part_index < _inputFile->parts(); part_index++)
     {
         const Header& header = _inputFile->header(part_index);
@@ -177,6 +176,109 @@ PyFile::PyFile(const std::string& filename, bool separate_channels, bool header_
             std::string name = a.name();
             const Attribute& attribute = a.attribute();
             P.header[py::str(name)] = getAttributeObject(name, &attribute);
+        }
+
+        //
+        // If we're only reading the header, we're done.
+        //
+        
+        if (!_header_only && _inputFile)
+        {
+            //
+            // If we're gathering RGB channels, identify which channels to gather
+            // by examining common prefixes.
+            //
+        
+            std::set<std::string> rgbaChannels;
+            if (!separate_channels)
+            {
+                for (auto c = header.channels().begin(); c != header.channels().end(); c++)
+                {
+                    std::string py_channel_name;
+                    char channel_name;
+                    if (P.channelNameToRGBA(header.channels(), c.name(), py_channel_name, channel_name) > 0)
+                        rgbaChannels.insert(c.name());
+                }
+            }
+        
+            std::vector<size_t> shape ({height, width});
+
+            //
+            // Read the channel data, different for image vs. deep
+            //
+        
+            auto type = header.type();
+            if (type == SCANLINEIMAGE || type == TILEDIMAGE)
+            {
+                P.readPixels(*_inputFile, header.channels(), shape, rgbaChannels, dw, separate_channels);
+            }
+            else if (type == DEEPSCANLINE || type == DEEPTILE)
+            {
+                P.readDeepPixels(*_inputFile, type, header.channels(), shape, rgbaChannels, dw, separate_channels);
+            }
+        }
+        
+        parts.append(py::cast<PyPart>(PyPart(P)));
+    } // for parts
+}
+
+PyFile::PyFile(const std::string& filename, const py::list& part_names, bool separate_channels, bool header_only)
+    : filename(filename),
+      _header_only(header_only),
+      _inputFile(std::make_unique<MultiPartInputFile>(filename.c_str()))
+{
+    bool test_parts = part_names.size() > 0;
+
+    for (int part_index = 0; part_index < _inputFile->parts(); part_index++)
+    {
+        const Header& header = _inputFile->header(part_index);
+
+        PyPart P;
+
+        P.part_index = part_index;
+        
+        const Box2i& dw = header.dataWindow();
+        auto width = static_cast<size_t>(dw.max.x - dw.min.x + 1);
+        auto height = static_cast<size_t>(dw.max.y - dw.min.y + 1);
+
+        //
+        // Fill the header dict with attributes from the input file header
+        //
+        
+        bool keep_part = true;
+        for (auto a = header.begin(); a != header.end(); a++)
+        {
+            std::string name = a.name();
+            const Attribute& attribute = a.attribute();
+            P.header[py::str(name)] = getAttributeObject(name, &attribute);
+
+            if(test_parts and name == "name")
+            {
+                keep_part = false;
+                if (auto v = dynamic_cast<const StringAttribute*> (&attribute))
+                {
+                    const std::string this_part_name = v->value();
+                    for (py::handle part_name_handle : part_names)
+                    {
+                        std::string part_name_str = part_name_handle.cast<std::string>();
+                        if (part_name_str == this_part_name)
+                        {
+                            keep_part = true;
+                            break;
+                        }
+                    }
+                }
+                if (!keep_part)
+                {
+                    break;
+                }
+            }
+
+        }
+
+        if (!keep_part)
+        {
+            continue;
         }
 
         //
@@ -2756,6 +2858,30 @@ PYBIND11_MODULE(OpenEXR, m)
              ----------
              filename : str
                  The path to the image file on disk.
+             separate_channels : bool
+                 If True, read each channel into a separate 2D numpy array
+                 if False (default), read pixel data into a single "RGB" or "RGBA" numpy array of dimension (height,width,3) or (height,width,4);
+             header_only : bool
+                 If True, read only the header metadata, not the image pixel data.
+
+             Example
+             -------  
+             >>> f = OpenEXR.File("image.exr", separate_channels=False, header_only=False)
+             )pbdoc")
+        .def(py::init<std::string,py::list,bool,bool>(),
+             py::arg("filename"),
+             py::arg("part_names"),
+             py::arg("separate_channels")=false,
+             py::arg("header_only")=false,
+             R"pbdoc(
+             Initialize a File by reading the image from the given filename.
+
+             Parameters
+             ----------
+             filename : str
+                 The path to the image file on disk.
+             part_names: list[str]
+                 The list of part names to read (if empty, read all)
              separate_channels : bool
                  If True, read each channel into a separate 2D numpy array
                  if False (default), read pixel data into a single "RGB" or "RGBA" numpy array of dimension (height,width,3) or (height,width,4);
