@@ -5,6 +5,9 @@ name: Python Wheels
 
 on:
 
+  # Allow manually triggering the workflow from the Actions tab.
+  workflow_dispatch:
+
   # Run on all changes (PR and push) to the python binding
   # source/configuration files, except on the release branches, which
   # have their own workflow, which also publish to pypi/test.pypi.
